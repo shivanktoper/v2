@@ -1206,7 +1206,7 @@ const DEFAULT_STATE = {
       avatar: '🧒',
       xp: 270,
       streak: 3,
-      bests: { trivia: 8, buildDish: 4, pronunciation: 5, scienceSpins: 6 },
+      bests: { trivia: 8, buildDish: 4, pronunciation: 5, scienceSpins: 6, sprint: 0 },
       unlockedBadges: ['🌱 Kitchen Apprentice', '🍄 Shroom Alchemist', '🥘 Dish Master']
     },
     parent: {
@@ -1214,7 +1214,7 @@ const DEFAULT_STATE = {
       avatar: '👨‍🍳',
       xp: 450,
       streak: 5,
-      bests: { trivia: 9, buildDish: 6, pronunciation: 7, scienceSpins: 8 },
+      bests: { trivia: 9, buildDish: 6, pronunciation: 7, scienceSpins: 8, sprint: 0 },
       unlockedBadges: ['🌶️ Spice Explorer', '🔥 Tandoor Wizard', '🎌🇵🇪 Nikkei Explorer']
     }
   },
@@ -1223,14 +1223,17 @@ const DEFAULT_STATE = {
     pronunciation: true,
     trivia: true,
     hotPotato: true,
-    spinScience: true
+    spinScience: true,
+    sprint: true
   },
   adminPin: 'careers2026',
   activeGameTab: 'buildDish',
   recipeFilter: 'all',
   recipeCompletedSteps: {},
   completedCityQuests: [],
-  theme: 'light'
+  theme: 'light',
+  crateCharge: 0,
+  cratesOpened: 0
 };
 
 class FusionApp {
@@ -1251,6 +1254,20 @@ class FusionApp {
     this.assembledSyllables = [];
     this.buildDishSelectedIngredients = [];
     this.hotPotatoGame = null;
+
+    // ---- Dopamine layer: combo streak, bursts, crate, sprint ----
+    this.comboCount = 0;
+    this.comboTimer = null;
+    this.lastPointer = null;
+    this.sprintTimer = null;
+    this.sprintRemaining = 60;
+    this.sprintScore = 0;
+    this.sprintStreak = 0;
+    this.sprintAnswered = 0;
+    this.sprintDeck = [];
+    this.sprintIndex = 0;
+    this.sprintLocked = false;
+    this.sprintSession = 0;
   }
 
   loadState() {
@@ -1454,8 +1471,14 @@ class FusionApp {
 
   addXP(amount, badgeToUnlock = null) {
     const profile = this.getActiveProfile();
-    profile.xp += amount;
-    
+    const previousXP = profile.xp;
+    const previousRankLevel = this.getCurrentRank(previousXP).level;
+
+    // Combo streak multiplies the reward for rapid-fire play
+    const multiplier = this.getComboMultiplier();
+    const gained = Math.max(1, Math.round(amount * multiplier));
+    profile.xp += gained;
+
     if (badgeToUnlock && !profile.unlockedBadges.includes(badgeToUnlock)) {
       profile.unlockedBadges.push(badgeToUnlock);
       showToast(`Badge Unlocked: ${badgeToUnlock}!`, 'success');
@@ -1466,8 +1489,260 @@ class FusionApp {
     this.renderHeader();
     this.renderProgressStrip();
     this.renderLeaderboard();
+
+    this.burstXP(gained, multiplier > 1);
+    this.addCrateCharge(gained);
+    this.animateXPPill(previousXP, profile.xp);
     sound.playCorrect();
+
+    if (currentRank.level > previousRankLevel) {
+      this.celebrateRankUp(currentRank);
+    }
     return currentRank;
+  }
+
+  // ========================================================
+  // DOPAMINE LAYER 1: COMBO STREAK MULTIPLIER
+  // ========================================================
+  getComboMultiplier() {
+    if (this.comboCount >= 8) return 2;
+    if (this.comboCount >= 5) return 1.5;
+    if (this.comboCount >= 3) return 1.25;
+    return 1;
+  }
+
+  registerHit() {
+    this.comboCount += 1;
+    clearTimeout(this.comboTimer);
+    this.comboTimer = setTimeout(() => this.breakCombo(), 7000);
+    if (this.comboCount >= 2) sound.playTick();
+    this.renderCombo();
+  }
+
+  breakCombo() {
+    clearTimeout(this.comboTimer);
+    this.comboCount = 0;
+    const banner = document.getElementById('combo-banner');
+    if (banner) banner.classList.remove('show', 'hot', 'blazing');
+  }
+
+  renderCombo() {
+    const banner = document.getElementById('combo-banner');
+    if (!banner) return;
+    if (this.comboCount < 2) {
+      banner.classList.remove('show', 'hot', 'blazing');
+      return;
+    }
+    const multiplier = this.getComboMultiplier();
+    banner.innerHTML = `
+      <span class="combo-flame">🔥</span>
+      <span class="combo-count">COMBO ×${this.comboCount}</span>
+      <span class="combo-mult">+${Math.round((multiplier - 1) * 100)}% XP</span>
+    `;
+    banner.classList.add('show');
+    banner.classList.toggle('hot', this.comboCount >= 5);
+    banner.classList.toggle('blazing', this.comboCount >= 8);
+    banner.style.animation = 'none';
+    void banner.offsetWidth;
+    banner.style.animation = '';
+  }
+
+  // ========================================================
+  // DOPAMINE LAYER 2: INSTANT XP FLOATING BURSTS + COUNT-UP
+  // ========================================================
+  burstXP(amount, isMultiplier = false) {
+    const layer = document.getElementById('xp-burst-layer');
+    if (!layer) return;
+    const point = this.lastPointer && (Date.now() - this.lastPointer.at < 2500)
+      ? this.lastPointer
+      : { x: window.innerWidth / 2, y: 130 };
+
+    const el = document.createElement('div');
+    el.className = 'xp-burst' + (isMultiplier ? ' mult' : '');
+    el.textContent = isMultiplier ? `+${amount} XP 🔥` : `+${amount} XP`;
+    el.style.left = `${point.x}px`;
+    el.style.top = `${point.y}px`;
+    el.style.setProperty('--drift', `${Math.round((Math.random() - 0.5) * 80)}px`);
+    layer.appendChild(el);
+    setTimeout(() => el.remove(), 1200);
+  }
+
+  animateXPPill(from, to) {
+    const pill = document.getElementById('xp-value-pill');
+    if (!pill) return;
+    if (to <= from) {
+      pill.textContent = `${to} XP`;
+      return;
+    }
+    const startedAt = performance.now();
+    const step = (now) => {
+      // Clamp: a frame timestamp can precede startedAt, which would swing the count backwards
+      const t = Math.min(1, Math.max(0, (now - startedAt) / 520));
+      const eased = 1 - Math.pow(1 - t, 3);
+      pill.textContent = `${Math.round(from + (to - from) * eased)} XP`;
+      if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+    pill.classList.remove('xp-pop');
+    void pill.offsetWidth;
+    pill.classList.add('xp-pop');
+
+    const bar = document.querySelector('.progress-bar-fill');
+    if (bar) {
+      bar.classList.remove('bar-pulse');
+      void bar.offsetWidth;
+      bar.classList.add('bar-pulse');
+    }
+  }
+
+  celebrateRankUp(rank) {
+    launchConfetti();
+    sound.playFanfare();
+    this.flashScreen();
+    showToast(`🎉 RANK UP! You are now ${rank.title} (Level ${rank.level})`, 'success');
+  }
+
+  flashScreen() {
+    const flash = document.createElement('div');
+    flash.className = 'screen-flash';
+    document.body.appendChild(flash);
+    setTimeout(() => flash.remove(), 850);
+  }
+
+  // ========================================================
+  // DOPAMINE LAYER 3: MYSTERY CRATE (VARIABLE REWARD)
+  // ========================================================
+  crateMarkup() {
+    const charge = Math.min(100, Math.round(this.state.crateCharge || 0));
+    const ready = charge >= 100;
+    return `
+      <button class="crate-widget ${ready ? 'ready' : ''}" id="crate-widget" title="${ready ? 'Mystery crate is ready — tap to open!' : 'Earn XP to charge the mystery crate'}">
+        <span class="crate-emoji">${ready ? '🎁' : '📦'}</span>
+        <span class="crate-mini-track"><span class="crate-mini-fill" style="width:${charge}%"></span></span>
+        <span class="crate-label">${ready ? 'OPEN!' : `${charge}%`}</span>
+      </button>
+    `;
+  }
+
+  addCrateCharge(xpGained) {
+    const charge = Math.min(100, (this.state.crateCharge || 0) + xpGained / 1.5);
+    this.state.crateCharge = charge;
+    this.saveState();
+    const widget = document.getElementById('crate-widget');
+    if (widget) {
+      widget.outerHTML = this.crateMarkup();
+    }
+  }
+
+  rollCrateReward() {
+    const rewards = [
+      { weight: 30, xp: 50, emoji: '💎', title: 'Spice Pouch! +50 XP', description: 'A generous handful of bonus XP for a sharp-eyed chef.' },
+      { weight: 18, xp: 100, emoji: '🏆', title: 'JACKPOT! +100 XP', description: 'The golden ladle. Biggest drop in the crate.' },
+      { weight: 22, xp: 25, emoji: '✨', title: '+25 XP Sparkle', description: 'A little sprinkle of stardust. It all adds up.' },
+      { weight: 15, xp: 30, emoji: '🔥', title: 'Streak Fan! +30 XP', description: 'Your family streak just grew by a day.', streak: true },
+      { weight: 15, xp: 20, badge: '🎁 Crate Opener', emoji: '🎁', title: 'Secret Badge Unlocked!', description: 'You found the Crate Opener achievement. Very rare.' }
+    ];
+    const total = rewards.reduce((sum, r) => sum + r.weight, 0);
+    let roll = Math.random() * total;
+    for (const reward of rewards) {
+      roll -= reward.weight;
+      if (roll <= 0) return reward;
+    }
+    return rewards[0];
+  }
+
+  openCrate() {
+    const charge = this.state.crateCharge || 0;
+    if (charge < 100) {
+      sound.playWrong();
+      showToast(`📦 Crate is ${Math.round(charge)}% charged — earn more XP to fill it!`, 'info');
+      return;
+    }
+
+    const modal = document.getElementById('crate-modal');
+    const content = document.getElementById('crate-dialog-content');
+    if (!modal || !content) return;
+
+    this.state.crateCharge = 0;
+    this.state.cratesOpened = (this.state.cratesOpened || 0) + 1;
+    this.saveState();
+
+    modal.classList.add('open');
+    content.innerHTML = `
+      <div class="crate-stage">
+        <div class="crate-spinner">📦</div>
+        <h3>Shaking the Mystery Crate...</h3>
+      </div>
+    `;
+    sound.playSizzle();
+
+    setTimeout(() => {
+      const reward = this.rollCrateReward();
+      content.innerHTML = `
+        <div class="crate-stage">
+          <div class="crate-spinner opened">${reward.emoji}</div>
+          <h3 style="color:var(--secondary);">${reward.title}</h3>
+          <p style="color:var(--text-muted); margin:0.4rem 0 1.5rem;">${reward.description}</p>
+          <button class="btn btn-primary" id="crate-claim-btn">Claim Reward 🎉</button>
+        </div>
+      `;
+      if (reward.streak) {
+        const profile = this.getActiveProfile();
+        profile.streak += 1;
+        this.saveState();
+        this.renderProgressStrip();
+      }
+      this.addXP(reward.xp, reward.badge || null);
+      sound.playFanfare();
+      launchConfetti();
+      this.flashScreen();
+      document.getElementById('crate-claim-btn')?.addEventListener('click', () => {
+        sound.playClick();
+        this.closeCrate();
+      });
+    }, 1150);
+  }
+
+  closeCrate() {
+    const modal = document.getElementById('crate-modal');
+    if (modal) modal.classList.remove('open');
+    if (typeof this.state !== 'undefined') this.renderProgressStrip();
+  }
+
+  // ========================================================
+  // DOPAMINE LAYER 4: ⚡ SURPRISE ME — ZERO-DECISION LAUNCH
+  // ========================================================
+  launchSurprise() {
+    sound.playClick();
+    const enabled = Object.keys(this.state.gameToggles).filter(k => this.state.gameToggles[k]);
+    if (!enabled.length) {
+      showToast('All games are turned off in Admin Mode.', 'info');
+      return;
+    }
+    const pick = enabled[Math.floor(Math.random() * enabled.length)];
+    const names = {
+      buildDish: 'Build-a-Dish',
+      pronunciation: 'Pronounce Lab',
+      trivia: 'Family Trivia',
+      hotPotato: 'Hot Potato Rush',
+      spinScience: 'Science Wheel',
+      sprint: 'Quick Cook Sprint'
+    };
+
+    if (this.state.currentTab !== 'games') {
+      this.switchMainTab('games', false);
+    }
+    this.breakCombo();
+    this.state.activeGameTab = pick;
+    this.saveState();
+    this.renderGameTabs();
+    this.renderActiveGame();
+
+    if (pick === 'sprint') {
+      this.startSprint();
+    }
+    showToast(`⚡ Surprise round: ${names[pick] || pick}!`, 'info');
+    document.getElementById('play-arena-container')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   getCurrentRank(xp) {
@@ -1546,7 +1821,7 @@ class FusionApp {
           <h4>
             <span>${rank.title}</span>
             <span style="font-size:0.85rem; font-weight:normal; color:var(--text-muted);">(Level ${rank.level})</span>
-            <span class="pill-badge" style="margin-left:auto;">${profile.xp} XP</span>
+            <span class="pill-badge xp-value-pill" id="xp-value-pill" style="margin-left:auto;">${profile.xp} XP</span>
           </h4>
           <div class="progress-bar-track">
             <div class="progress-bar-fill" style="width: ${progress}%"></div>
@@ -1560,6 +1835,7 @@ class FusionApp {
           <div>🔥 ${profile.streak} Days</div>
           <div style="font-size:0.75rem; color:var(--text-muted);">Family Streak</div>
         </div>
+        ${this.crateMarkup()}
       </div>
     `;
   }
@@ -1576,7 +1852,8 @@ class FusionApp {
       { id: 'pronunciation', name: 'Pronounce Lab', icon: '🗣️', desc: 'Phonetic Matching & Voice Check', activeDesc: 'Listen, reorder & speak' },
       { id: 'trivia', name: 'Family Trivia', icon: '🧠', desc: '10 Qs with Soft Timer & Hints', activeDesc: 'Food science & origins' },
       { id: 'hotPotato', name: 'Hot Potato Rush', icon: '🥔', desc: 'Whack, Cook in Coals & Serve Golden', activeDesc: 'Cook on coals, serve golden' },
-      { id: 'spinScience', name: 'Science Wheel', icon: '🎡', desc: 'Food Chemistry Explanations', activeDesc: 'Spin & discover reactions' }
+      { id: 'spinScience', name: 'Science Wheel', icon: '🎡', desc: 'Food Chemistry Explanations', activeDesc: 'Spin & discover reactions' },
+      { id: 'sprint', name: 'Quick Cook Sprint', icon: '⚡', desc: '60-Second Rapid Fire XP Run', activeDesc: 'Endless Qs, instant XP' }
     ];
 
     track.innerHTML = games.map(g => {
@@ -1647,6 +1924,9 @@ class FusionApp {
     const arena = document.getElementById('play-arena-container');
     if (!arena) return;
 
+    // Never leave a timed game loop running against a replaced arena
+    this.stopSprint();
+
     if (!this.state.gameToggles[this.state.activeGameTab]) {
       const firstEnabled = Object.keys(this.state.gameToggles).find(k => this.state.gameToggles[k]);
       if (firstEnabled) {
@@ -1680,6 +1960,9 @@ class FusionApp {
         break;
       case 'spinScience':
         this.renderSpinScienceGame(arena);
+        break;
+      case 'sprint':
+        this.renderSprintGame(arena);
         break;
       default:
         this.renderBuildDishGame(arena);
@@ -2200,6 +2483,225 @@ class FusionApp {
         });
       });
     });
+  }
+
+  // ========================================================
+  // DOPAMINE LAYER 5: QUICK COOK SPRINT (60 SECOND RAPID FIRE)
+  // ========================================================
+  renderSprintGame(arena) {
+    this.stopSprint();
+    const profile = this.getActiveProfile();
+
+    arena.innerHTML = `
+      <div class="arena-header">
+        <div class="arena-title-group">
+          <span class="arena-icon">⚡</span>
+          <div>
+            <h3>Quick Cook Sprint</h3>
+            <p style="font-size:0.85rem; color:var(--text-muted);">60 seconds. Endless questions. Instant XP.</p>
+          </div>
+        </div>
+        <div class="arena-badges">
+          <span class="pill-badge">Personal Best: ${profile.bests.sprint || 0}</span>
+        </div>
+      </div>
+
+      <div class="sprint-intro">
+        <div class="sprint-intro-emoji">⏱️🍳</div>
+        <h2>One minute. Go fast. Get paid.</h2>
+        <p style="color:var(--text-muted); max-width:520px; margin:0.6rem auto 1.6rem;">
+          Answer as many food-science questions as you can before the timer runs out.
+          Every correct tap is instant XP — no waiting, no next buttons. Chain answers for a combo multiplier.
+        </p>
+        <button class="btn btn-primary" id="sprint-start-btn" style="font-size:1.05rem; padding:0.85rem 2.2rem;">
+          Start the 60s Sprint ⚡
+        </button>
+      </div>
+    `;
+
+    document.getElementById('sprint-start-btn')?.addEventListener('click', () => this.startSprint());
+  }
+
+  startSprint() {
+    const arena = document.getElementById('play-arena-container');
+    if (!arena) return;
+
+    this.sprintSession += 1;
+    this.sprintDeck = [...TRIVIA_QUESTIONS].sort(() => Math.random() - 0.5);
+    this.sprintIndex = 0;
+    this.sprintScore = 0;
+    this.sprintStreak = 0;
+    this.sprintAnswered = 0;
+    this.sprintRemaining = 60;
+    this.sprintLocked = false;
+
+    arena.innerHTML = `
+      <div class="sprint-shell">
+        <div class="sprint-hud">
+          <div class="sprint-hud-stat">
+            <span class="sprint-hud-label">Score</span>
+            <span class="sprint-hud-value" id="sprint-score">0</span>
+          </div>
+          <div class="sprint-timer-wrap">
+            <div class="sprint-timer-track">
+              <div class="sprint-timer-fill" id="sprint-timer-fill" style="width:100%"></div>
+            </div>
+            <span class="sprint-time-label" id="sprint-time-label">60s</span>
+          </div>
+          <div class="sprint-hud-stat">
+            <span class="sprint-hud-label">Streak</span>
+            <span class="sprint-hud-value" id="sprint-streak">🔥 0</span>
+          </div>
+        </div>
+        <div class="sprint-question-box" id="sprint-question-box"></div>
+      </div>
+    `;
+
+    this.renderSprintQuestion();
+    this.startSprintTimer();
+    sound.playChime();
+  }
+
+  startSprintTimer() {
+    this.stopSprint();
+    const startedAt = Date.now();
+    this.sprintTimer = setInterval(() => {
+      this.sprintRemaining = Math.max(0, 60 - (Date.now() - startedAt) / 1000);
+      this.renderSprintHUD();
+      if (this.sprintRemaining <= 0) this.endSprint();
+    }, 100);
+  }
+
+  stopSprint() {
+    clearInterval(this.sprintTimer);
+    this.sprintTimer = null;
+  }
+
+  renderSprintHUD() {
+    const timeLabel = document.getElementById('sprint-time-label');
+    const fill = document.getElementById('sprint-timer-fill');
+    const scoreEl = document.getElementById('sprint-score');
+    const streakEl = document.getElementById('sprint-streak');
+
+    if (timeLabel) timeLabel.textContent = `${Math.ceil(this.sprintRemaining)}s`;
+    if (fill) {
+      fill.style.width = `${(this.sprintRemaining / 60) * 100}%`;
+      fill.classList.toggle('urgent', this.sprintRemaining <= 10);
+    }
+    if (scoreEl) scoreEl.textContent = this.sprintScore;
+    if (streakEl) streakEl.textContent = `🔥 ${this.sprintStreak}`;
+  }
+
+  renderSprintQuestion() {
+    const qBox = document.getElementById('sprint-question-box');
+    if (!qBox) return;
+
+    if (this.sprintIndex >= this.sprintDeck.length) {
+      this.sprintDeck = [...TRIVIA_QUESTIONS].sort(() => Math.random() - 0.5);
+      this.sprintIndex = 0;
+    }
+    const q = this.sprintDeck[this.sprintIndex];
+    this.sprintLocked = false;
+
+    qBox.innerHTML = `
+      <div class="sprint-question">${q.question}</div>
+      <div class="sprint-options">
+        ${q.options.map((opt, i) => `
+          <button class="sprint-option" data-sprint-idx="${i}">${opt}</button>
+        `).join('')}
+      </div>
+    `;
+
+    qBox.querySelectorAll('.sprint-option').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.handleSprintAnswer(parseInt(btn.getAttribute('data-sprint-idx')), q, btn);
+      });
+    });
+  }
+
+  handleSprintAnswer(idx, q, btn) {
+    if (this.sprintLocked || this.sprintRemaining <= 0) return;
+    this.sprintLocked = true;
+
+    const session = this.sprintSession;
+    const options = document.querySelectorAll('.sprint-option');
+    options.forEach(o => o.classList.add('locked'));
+    this.sprintAnswered += 1;
+
+    const isCorrect = idx === q.correctIndex;
+    if (isCorrect) {
+      btn.classList.add('correct');
+      this.sprintScore += 1;
+      this.sprintStreak += 1;
+      this.registerHit();
+      this.addXP(10, q.badge);
+    } else {
+      btn.classList.add('wrong');
+      options[q.correctIndex]?.classList.add('correct');
+      this.sprintStreak = 0;
+      this.breakCombo();
+      sound.playWrong();
+    }
+    this.renderSprintHUD();
+
+    setTimeout(() => {
+      if (session !== this.sprintSession) return;
+      if (this.sprintRemaining <= 0) return;
+      this.sprintIndex += 1;
+      this.renderSprintQuestion();
+    }, isCorrect ? 300 : 750);
+  }
+
+  endSprint() {
+    this.stopSprint();
+    this.sprintRemaining = 0;
+    this.sprintLocked = true;
+    this.breakCombo();
+
+    const profile = this.getActiveProfile();
+    if (!profile.bests) profile.bests = {};
+    const isRecord = this.sprintScore > (profile.bests.sprint || 0);
+    if (isRecord) profile.bests.sprint = this.sprintScore;
+    this.saveState();
+
+    const accuracy = this.sprintAnswered > 0
+      ? Math.round((this.sprintScore / this.sprintAnswered) * 100)
+      : 0;
+
+    const arena = document.getElementById('play-arena-container');
+    if (!arena) return;
+
+    arena.innerHTML = `
+      <div class="arena-header">
+        <div class="arena-title-group">
+          <span class="arena-icon">🏁</span>
+          <div>
+            <h3>Time's Up!</h3>
+            <p style="font-size:0.85rem; color:var(--text-muted);">That was one minute of pure cooking speed.</p>
+          </div>
+        </div>
+      </div>
+      <div class="sprint-results">
+        <div class="sprint-final-score">${this.sprintScore}</div>
+        <div class="sprint-final-label">correct answers</div>
+        ${isRecord ? '<div class="sprint-record-badge">🏆 NEW PERSONAL BEST!</div>' : ''}
+        <div class="sprint-results-grid">
+          <div><strong>${this.sprintAnswered}</strong><span>attempted</span></div>
+          <div><strong>${accuracy}%</strong><span>accuracy</span></div>
+          <div><strong>${this.sprintStreak}</strong><span>best chain</span></div>
+        </div>
+        <button class="btn btn-primary" id="sprint-again-btn" style="margin-top:1.75rem; padding:0.8rem 2rem;">
+          Run It Again ⚡
+        </button>
+      </div>
+    `;
+
+    document.getElementById('sprint-again-btn')?.addEventListener('click', () => this.startSprint());
+    sound.playFanfare();
+    if (isRecord) {
+      launchConfetti();
+      this.flashScreen();
+    }
   }
 
   startTriviaTimer() {
@@ -3722,6 +4224,13 @@ Guidelines:
               <span class="slider"></span>
             </label>
           </div>
+          <div class="toggle-row">
+            <span>⚡ Quick Cook Sprint (60s Rapid Fire)</span>
+            <label class="switch">
+              <input type="checkbox" id="toggle-sprint" ${this.state.gameToggles.sprint !== false ? 'checked' : ''} />
+              <span class="slider"></span>
+            </label>
+          </div>
         </div>
 
         <div style="background:var(--bg-parchment); border:1.5px solid var(--border-color); border-radius:var(--radius-sm); padding:0.95rem; margin-bottom:1.25rem;">
@@ -3774,6 +4283,7 @@ Guidelines:
         this.state.gameToggles.trivia = document.getElementById('toggle-trivia')?.checked ?? true;
         this.state.gameToggles.hotPotato = document.getElementById('toggle-hotPotato')?.checked ?? true;
         this.state.gameToggles.spinScience = document.getElementById('toggle-spinScience')?.checked ?? true;
+        this.state.gameToggles.sprint = document.getElementById('toggle-sprint')?.checked ?? true;
 
         this.saveState();
         this.renderGameTabs();
@@ -3807,7 +4317,7 @@ Guidelines:
 
       // Reset Admin Defaults (PIN and all game toggles)
       document.getElementById('reset-admin-btn')?.addEventListener('click', () => {
-        if (confirm('Reset Admin PIN back to default and enable all 5 games?')) {
+        if (confirm('Reset Admin PIN back to default and enable all 6 games?')) {
           sound.playCorrect();
           this.state.adminPin = 'careers2026';
           this.state.gameToggles = {
@@ -3815,7 +4325,8 @@ Guidelines:
             pronunciation: true,
             trivia: true,
             hotPotato: true,
-            spinScience: true
+            spinScience: true,
+            sprint: true
           };
           this.saveState();
           this.renderGameTabs();
@@ -3849,8 +4360,25 @@ Guidelines:
       if (e.key === 'Escape') {
         this.closeAdminModal();
         this.closeRecipePopout();
+        this.closeCrate();
       }
     });
+
+    // Remember where the last tap happened so XP bursts pop from the finger
+    document.addEventListener('pointerdown', (e) => {
+      this.lastPointer = { x: e.clientX, y: e.clientY, at: Date.now() };
+    }, true);
+
+    // Mystery crate lives inside the re-rendered progress strip, so delegate
+    document.getElementById('progress-strip-container')?.addEventListener('click', (e) => {
+      if (e.target.closest('#crate-widget')) this.openCrate();
+    });
+
+    document.getElementById('crate-modal')?.addEventListener('click', (e) => {
+      if (e.target.id === 'crate-modal') this.closeCrate();
+    });
+
+    document.getElementById('surprise-fab')?.addEventListener('click', () => this.launchSurprise());
   }
 }
 

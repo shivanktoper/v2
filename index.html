@@ -86,7 +86,7 @@
           </div>
           <div class="banner-quick-chips">
             <span class="veg-badge"><span class="veg-icon-dot"></span> 100% Pure Veg</span>
-            <span class="pill-badge" style="color:var(--primary); font-weight:800;">5 Arcade Labs</span>
+            <span class="pill-badge" style="color:var(--primary); font-weight:800;">6 Arcade Labs</span>
             <span class="pill-badge" style="color:var(--secondary); font-weight:800;">Earn XP</span>
           </div>
         </div>
@@ -216,6 +216,25 @@
     </div>
   </div>
 
+  <!-- Combo Streak Banner (floats in when you chain actions) -->
+  <div id="combo-banner" class="combo-banner" aria-live="polite"></div>
+
+  <!-- Floating +XP Bursts -->
+  <div id="xp-burst-layer" class="xp-burst-layer" aria-hidden="true"></div>
+
+  <!-- Mystery Crate Reveal Overlay (variable reward) -->
+  <div class="modal-overlay" id="crate-modal" role="dialog" aria-modal="true">
+    <div class="crate-dialog" id="crate-dialog-content">
+      <!-- Rendered dynamically by bundle.js -->
+    </div>
+  </div>
+
+  <!-- One-Tap Instant Play Launcher -->
+  <button id="surprise-fab" class="surprise-fab" title="Instantly start a random quick challenge">
+    <span class="surprise-fab-icon">⚡</span>
+    <span class="surprise-fab-text">Surprise Me</span>
+  </button>
+
   <!-- Toast Notification Container -->
   <div id="toast-container" class="toast-container"></div>
 
@@ -239,7 +258,7 @@
         <div>
           <h4 style="font-size:1.05rem; margin-bottom:0.85rem;">Navigation Views</h4>
           <ul style="list-style:none; font-size:0.88rem; display:flex; flex-direction:column; gap:0.5rem;">
-            <li><a href="javascript:void(0)" class="footer-nav-link" data-tab="games">🎮 Games Hub (5 Arcade Labs)</a></li>
+            <li><a href="javascript:void(0)" class="footer-nav-link" data-tab="games">🎮 Games Hub (6 Arcade Labs)</a></li>
             <li><a href="javascript:void(0)" class="footer-nav-link" data-tab="kitchen">📖 Kitchen Lab (Recipes & Substitutes)</a></li>
             <li><a href="javascript:void(0)" class="footer-nav-link" data-tab="leaderboard">🏆 Family Leaderboard & Ranks</a></li>
           </ul>

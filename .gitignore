@@ -19,3 +19,11 @@ package-lock.json
 # Local env
 .env
 .env.local
+
+# Ephemeral artifacts & test recordings
+.freebuff/
+.agents/
+antigravity-1am/
+hyperframes/
+mobile_snapshots/
+scratch/
